@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const students = require('../data/students');
+const departments = require('../data/departments');
+const studentGrades = require('../data/studentGrades');
 
 /**
  * @swagger
@@ -8,9 +10,7 @@ const students = require('../data/students');
  *   schemas:
  *     Student:
  *       type: object
- *       required:
- *         - name
- *         - age
+ *       required: [name, age]
  *       properties:
  *         id:
  *           type: integer
@@ -18,6 +18,9 @@ const students = require('../data/students');
  *           type: string
  *         age:
  *           type: integer
+ *         departmentId:
+ *           type: integer
+ *           nullable: true
  */
 
 /**
@@ -28,13 +31,7 @@ const students = require('../data/students');
  *     tags: [Students]
  *     responses:
  *       200:
- *         description: List of students
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 $ref: '#/components/schemas/Student'
+ *         description: List of all students
  */
 router.get('/', (req, res) => {
   res.json(students);
@@ -55,10 +52,6 @@ router.get('/', (req, res) => {
  *     responses:
  *       200:
  *         description: Student found
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Student'
  *       404:
  *         description: Student not found
  */
@@ -80,28 +73,29 @@ router.get('/:id', (req, res) => {
  *         application/json:
  *           schema:
  *             type: object
- *             required:
- *               - name
- *               - age
+ *             required: [name, age]
  *             properties:
  *               name:
  *                 type: string
  *               age:
  *                 type: integer
+ *               departmentId:
+ *                 type: integer
  *     responses:
  *       201:
  *         description: Student created
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Student'
+ *       400:
+ *         description: Department not found
  */
 router.post('/', (req, res) => {
-  const { name, age } = req.body;
+  const { name, age, departmentId } = req.body;
+  if (departmentId && !departments.find(d => d.id === departmentId))
+    return res.status(400).json({ message: 'Department not found' });
   const newStudent = {
     id: students.length ? students[students.length - 1].id + 1 : 1,
     name,
     age,
+    departmentId: departmentId || null,
   };
   students.push(newStudent);
   res.status(201).json(newStudent);
@@ -130,19 +124,19 @@ router.post('/', (req, res) => {
  *                 type: string
  *               age:
  *                 type: integer
+ *               departmentId:
+ *                 type: integer
  *     responses:
  *       200:
  *         description: Student updated
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Student'
  *       404:
  *         description: Student not found
  */
 router.put('/:id', (req, res) => {
   const index = students.findIndex(s => s.id === parseInt(req.params.id));
   if (index === -1) return res.status(404).json({ message: 'Student not found' });
+  if (req.body.departmentId && !departments.find(d => d.id === req.body.departmentId))
+    return res.status(400).json({ message: 'Department not found' });
   students[index] = { ...students[index], ...req.body };
   res.json(students[index]);
 });
@@ -162,10 +156,6 @@ router.put('/:id', (req, res) => {
  *     responses:
  *       200:
  *         description: Student deleted
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/Student'
  *       404:
  *         description: Student not found
  */
@@ -174,6 +164,86 @@ router.delete('/:id', (req, res) => {
   if (index === -1) return res.status(404).json({ message: 'Student not found' });
   const deleted = students.splice(index, 1);
   res.json(deleted[0]);
+});
+
+/**
+ * @swagger
+ * /students/{id}/grades:
+ *   post:
+ *     summary: Add a grade for a student in a course
+ *     tags: [Students]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [courseId, grade]
+ *             properties:
+ *               courseId:
+ *                 type: integer
+ *               grade:
+ *                 type: number
+ *     responses:
+ *       201:
+ *         description: Grade added
+ *       404:
+ *         description: Student or course not found
+ */
+router.post('/:id/grades', (req, res) => {
+  const student = students.find(s => s.id === parseInt(req.params.id));
+  if (!student) return res.status(404).json({ message: 'Student not found' });
+  const { courseId, grade } = req.body;
+  const courses = require('../data/courses');
+  if (!courses.find(c => c.id === courseId))
+    return res.status(404).json({ message: 'Course not found' });
+  const existing = studentGrades.findIndex(
+    g => g.studentId === student.id && g.courseId === courseId
+  );
+  if (existing !== -1) {
+    studentGrades[existing].grade = grade;
+    return res.json(studentGrades[existing]);
+  }
+  const entry = { studentId: student.id, courseId, grade };
+  studentGrades.push(entry);
+  res.status(201).json(entry);
+});
+
+/**
+ * @swagger
+ * /students/{id}/grades:
+ *   get:
+ *     summary: Get all grades for a student
+ *     tags: [Students]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: List of grades
+ *       404:
+ *         description: Student not found
+ */
+router.get('/:id/grades', (req, res) => {
+  const student = students.find(s => s.id === parseInt(req.params.id));
+  if (!student) return res.status(404).json({ message: 'Student not found' });
+  const courses = require('../data/courses');
+  const grades = studentGrades
+    .filter(g => g.studentId === student.id)
+    .map(g => ({
+      ...g,
+      course: courses.find(c => c.id === g.courseId),
+    }));
+  res.json(grades);
 });
 
 module.exports = router;
