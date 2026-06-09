@@ -1,9 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const departments = require('../data/departments');
-const students = require('../data/students');
-const courses = require('../data/courses');
-const departmentCourses = require('../data/departmentCourses');
+const db = require('../db');
 
 /**
  * @swagger
@@ -29,8 +26,9 @@ const departmentCourses = require('../data/departmentCourses');
  *       200:
  *         description: List of all departments
  */
-router.get('/', (req, res) => {
-  res.json(departments);
+router.get('/', async (req, res) => {
+  const result = await db.execute('SELECT * FROM departments');
+  res.json(result.rows);
 });
 
 /**
@@ -51,10 +49,10 @@ router.get('/', (req, res) => {
  *       404:
  *         description: Department not found
  */
-router.get('/:id', (req, res) => {
-  const dept = departments.find(d => d.id === parseInt(req.params.id));
-  if (!dept) return res.status(404).json({ message: 'Department not found' });
-  res.json(dept);
+router.get('/:id', async (req, res) => {
+  const result = await db.execute({ sql: 'SELECT * FROM departments WHERE id = ?', args: [req.params.id] });
+  if (!result.rows.length) return res.status(404).json({ message: 'Department not found' });
+  res.json(result.rows[0]);
 });
 
 /**
@@ -77,14 +75,13 @@ router.get('/:id', (req, res) => {
  *       201:
  *         description: Department created
  */
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { name } = req.body;
-  const newDept = {
-    id: departments.length ? departments[departments.length - 1].id + 1 : 1,
-    name,
-  };
-  departments.push(newDept);
-  res.status(201).json(newDept);
+  const result = await db.execute({
+    sql: 'INSERT INTO departments (name) VALUES (?) RETURNING *',
+    args: [name],
+  });
+  res.status(201).json(result.rows[0]);
 });
 
 /**
@@ -114,11 +111,15 @@ router.post('/', (req, res) => {
  *       404:
  *         description: Department not found
  */
-router.put('/:id', (req, res) => {
-  const index = departments.findIndex(d => d.id === parseInt(req.params.id));
-  if (index === -1) return res.status(404).json({ message: 'Department not found' });
-  departments[index] = { ...departments[index], ...req.body };
-  res.json(departments[index]);
+router.put('/:id', async (req, res) => {
+  const existing = await db.execute({ sql: 'SELECT * FROM departments WHERE id = ?', args: [req.params.id] });
+  if (!existing.rows.length) return res.status(404).json({ message: 'Department not found' });
+  const name = req.body.name ?? existing.rows[0].name;
+  const result = await db.execute({
+    sql: 'UPDATE departments SET name = ? WHERE id = ? RETURNING *',
+    args: [name, req.params.id],
+  });
+  res.json(result.rows[0]);
 });
 
 /**
@@ -139,11 +140,11 @@ router.put('/:id', (req, res) => {
  *       404:
  *         description: Department not found
  */
-router.delete('/:id', (req, res) => {
-  const index = departments.findIndex(d => d.id === parseInt(req.params.id));
-  if (index === -1) return res.status(404).json({ message: 'Department not found' });
-  const deleted = departments.splice(index, 1);
-  res.json(deleted[0]);
+router.delete('/:id', async (req, res) => {
+  const existing = await db.execute({ sql: 'SELECT * FROM departments WHERE id = ?', args: [req.params.id] });
+  if (!existing.rows.length) return res.status(404).json({ message: 'Department not found' });
+  await db.execute({ sql: 'DELETE FROM departments WHERE id = ?', args: [req.params.id] });
+  res.json(existing.rows[0]);
 });
 
 /**
@@ -164,10 +165,14 @@ router.delete('/:id', (req, res) => {
  *       404:
  *         description: Department not found
  */
-router.get('/:id/students', (req, res) => {
-  const dept = departments.find(d => d.id === parseInt(req.params.id));
-  if (!dept) return res.status(404).json({ message: 'Department not found' });
-  res.json(students.filter(s => s.departmentId === dept.id));
+router.get('/:id/students', async (req, res) => {
+  const dept = await db.execute({ sql: 'SELECT id FROM departments WHERE id = ?', args: [req.params.id] });
+  if (!dept.rows.length) return res.status(404).json({ message: 'Department not found' });
+  const result = await db.execute({
+    sql: 'SELECT * FROM students WHERE departmentId = ?',
+    args: [req.params.id],
+  });
+  res.json(result.rows);
 });
 
 /**
@@ -188,13 +193,16 @@ router.get('/:id/students', (req, res) => {
  *       404:
  *         description: Department not found
  */
-router.get('/:id/courses', (req, res) => {
-  const dept = departments.find(d => d.id === parseInt(req.params.id));
-  if (!dept) return res.status(404).json({ message: 'Department not found' });
-  const ids = departmentCourses
-    .filter(dc => dc.departmentId === dept.id)
-    .map(dc => dc.courseId);
-  res.json(courses.filter(c => ids.includes(c.id)));
+router.get('/:id/courses', async (req, res) => {
+  const dept = await db.execute({ sql: 'SELECT id FROM departments WHERE id = ?', args: [req.params.id] });
+  if (!dept.rows.length) return res.status(404).json({ message: 'Department not found' });
+  const result = await db.execute({
+    sql: `SELECT c.* FROM courses c
+          JOIN department_courses dc ON dc.courseId = c.id
+          WHERE dc.departmentId = ?`,
+    args: [req.params.id],
+  });
+  res.json(result.rows);
 });
 
 module.exports = router;

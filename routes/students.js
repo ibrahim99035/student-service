@@ -1,8 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const students = require('../data/students');
-const departments = require('../data/departments');
-const studentGrades = require('../data/studentGrades');
+const db = require('../db');
 
 /**
  * @swagger
@@ -33,8 +31,9 @@ const studentGrades = require('../data/studentGrades');
  *       200:
  *         description: List of all students
  */
-router.get('/', (req, res) => {
-  res.json(students);
+router.get('/', async (req, res) => {
+  const result = await db.execute('SELECT * FROM students');
+  res.json(result.rows);
 });
 
 /**
@@ -55,10 +54,13 @@ router.get('/', (req, res) => {
  *       404:
  *         description: Student not found
  */
-router.get('/:id', (req, res) => {
-  const student = students.find(s => s.id === parseInt(req.params.id));
-  if (!student) return res.status(404).json({ message: 'Student not found' });
-  res.json(student);
+router.get('/:id', async (req, res) => {
+  const result = await db.execute({
+    sql: 'SELECT * FROM students WHERE id = ?',
+    args: [req.params.id],
+  });
+  if (!result.rows.length) return res.status(404).json({ message: 'Student not found' });
+  res.json(result.rows[0]);
 });
 
 /**
@@ -87,18 +89,17 @@ router.get('/:id', (req, res) => {
  *       400:
  *         description: Department not found
  */
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { name, age, departmentId } = req.body;
-  if (departmentId && !departments.find(d => d.id === departmentId))
-    return res.status(400).json({ message: 'Department not found' });
-  const newStudent = {
-    id: students.length ? students[students.length - 1].id + 1 : 1,
-    name,
-    age,
-    departmentId: departmentId || null,
-  };
-  students.push(newStudent);
-  res.status(201).json(newStudent);
+  if (departmentId) {
+    const dept = await db.execute({ sql: 'SELECT id FROM departments WHERE id = ?', args: [departmentId] });
+    if (!dept.rows.length) return res.status(400).json({ message: 'Department not found' });
+  }
+  const result = await db.execute({
+    sql: 'INSERT INTO students (name, age, departmentId) VALUES (?, ?, ?) RETURNING *',
+    args: [name, age, departmentId || null],
+  });
+  res.status(201).json(result.rows[0]);
 });
 
 /**
@@ -132,13 +133,18 @@ router.post('/', (req, res) => {
  *       404:
  *         description: Student not found
  */
-router.put('/:id', (req, res) => {
-  const index = students.findIndex(s => s.id === parseInt(req.params.id));
-  if (index === -1) return res.status(404).json({ message: 'Student not found' });
-  if (req.body.departmentId && !departments.find(d => d.id === req.body.departmentId))
-    return res.status(400).json({ message: 'Department not found' });
-  students[index] = { ...students[index], ...req.body };
-  res.json(students[index]);
+router.put('/:id', async (req, res) => {
+  const existing = await db.execute({ sql: 'SELECT * FROM students WHERE id = ?', args: [req.params.id] });
+  if (!existing.rows.length) return res.status(404).json({ message: 'Student not found' });
+  const current = existing.rows[0];
+  const name = req.body.name ?? current.name;
+  const age = req.body.age ?? current.age;
+  const departmentId = req.body.departmentId !== undefined ? req.body.departmentId : current.departmentId;
+  const result = await db.execute({
+    sql: 'UPDATE students SET name = ?, age = ?, departmentId = ? WHERE id = ? RETURNING *',
+    args: [name, age, departmentId, req.params.id],
+  });
+  res.json(result.rows[0]);
 });
 
 /**
@@ -159,18 +165,18 @@ router.put('/:id', (req, res) => {
  *       404:
  *         description: Student not found
  */
-router.delete('/:id', (req, res) => {
-  const index = students.findIndex(s => s.id === parseInt(req.params.id));
-  if (index === -1) return res.status(404).json({ message: 'Student not found' });
-  const deleted = students.splice(index, 1);
-  res.json(deleted[0]);
+router.delete('/:id', async (req, res) => {
+  const existing = await db.execute({ sql: 'SELECT * FROM students WHERE id = ?', args: [req.params.id] });
+  if (!existing.rows.length) return res.status(404).json({ message: 'Student not found' });
+  await db.execute({ sql: 'DELETE FROM students WHERE id = ?', args: [req.params.id] });
+  res.json(existing.rows[0]);
 });
 
 /**
  * @swagger
  * /students/{id}/grades:
  *   post:
- *     summary: Add a grade for a student in a course
+ *     summary: Add or update a grade for a student in a course
  *     tags: [Students]
  *     parameters:
  *       - in: path
@@ -192,27 +198,23 @@ router.delete('/:id', (req, res) => {
  *                 type: number
  *     responses:
  *       201:
- *         description: Grade added
+ *         description: Grade added or updated
  *       404:
  *         description: Student or course not found
  */
-router.post('/:id/grades', (req, res) => {
-  const student = students.find(s => s.id === parseInt(req.params.id));
-  if (!student) return res.status(404).json({ message: 'Student not found' });
+router.post('/:id/grades', async (req, res) => {
+  const student = await db.execute({ sql: 'SELECT id FROM students WHERE id = ?', args: [req.params.id] });
+  if (!student.rows.length) return res.status(404).json({ message: 'Student not found' });
   const { courseId, grade } = req.body;
-  const courses = require('../data/courses');
-  if (!courses.find(c => c.id === courseId))
-    return res.status(404).json({ message: 'Course not found' });
-  const existing = studentGrades.findIndex(
-    g => g.studentId === student.id && g.courseId === courseId
-  );
-  if (existing !== -1) {
-    studentGrades[existing].grade = grade;
-    return res.json(studentGrades[existing]);
-  }
-  const entry = { studentId: student.id, courseId, grade };
-  studentGrades.push(entry);
-  res.status(201).json(entry);
+  const course = await db.execute({ sql: 'SELECT id FROM courses WHERE id = ?', args: [courseId] });
+  if (!course.rows.length) return res.status(404).json({ message: 'Course not found' });
+  const result = await db.execute({
+    sql: `INSERT INTO student_grades (studentId, courseId, grade) VALUES (?, ?, ?)
+          ON CONFLICT(studentId, courseId) DO UPDATE SET grade = excluded.grade
+          RETURNING *`,
+    args: [req.params.id, courseId, grade],
+  });
+  res.status(201).json(result.rows[0]);
 });
 
 /**
@@ -229,21 +231,21 @@ router.post('/:id/grades', (req, res) => {
  *           type: integer
  *     responses:
  *       200:
- *         description: List of grades
+ *         description: List of grades with course info
  *       404:
  *         description: Student not found
  */
-router.get('/:id/grades', (req, res) => {
-  const student = students.find(s => s.id === parseInt(req.params.id));
-  if (!student) return res.status(404).json({ message: 'Student not found' });
-  const courses = require('../data/courses');
-  const grades = studentGrades
-    .filter(g => g.studentId === student.id)
-    .map(g => ({
-      ...g,
-      course: courses.find(c => c.id === g.courseId),
-    }));
-  res.json(grades);
+router.get('/:id/grades', async (req, res) => {
+  const student = await db.execute({ sql: 'SELECT id FROM students WHERE id = ?', args: [req.params.id] });
+  if (!student.rows.length) return res.status(404).json({ message: 'Student not found' });
+  const result = await db.execute({
+    sql: `SELECT sg.*, c.name as courseName, c.credits
+          FROM student_grades sg
+          JOIN courses c ON c.id = sg.courseId
+          WHERE sg.studentId = ?`,
+    args: [req.params.id],
+  });
+  res.json(result.rows);
 });
 
 module.exports = router;

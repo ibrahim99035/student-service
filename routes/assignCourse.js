@@ -1,8 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const departmentCourses = require('../data/departmentCourses');
-const departments = require('../data/departments');
-const courses = require('../data/courses');
+const db = require('../db');
 
 /**
  * @swagger
@@ -24,23 +22,28 @@ const courses = require('../data/courses');
  *                 type: integer
  *     responses:
  *       201:
- *         description: Course assigned to department
+ *         description: Course assigned
  *       400:
- *         description: Already assigned or invalid IDs
+ *         description: Already assigned
  *       404:
  *         description: Department or course not found
  */
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { departmentId, courseId } = req.body;
-  if (!departments.find(d => d.id === departmentId))
-    return res.status(404).json({ message: 'Department not found' });
-  if (!courses.find(c => c.id === courseId))
-    return res.status(404).json({ message: 'Course not found' });
-  if (departmentCourses.find(dc => dc.departmentId === departmentId && dc.courseId === courseId))
-    return res.status(400).json({ message: 'Course already assigned to this department' });
-  const entry = { departmentId, courseId };
-  departmentCourses.push(entry);
-  res.status(201).json(entry);
+  const dept = await db.execute({ sql: 'SELECT id FROM departments WHERE id = ?', args: [departmentId] });
+  if (!dept.rows.length) return res.status(404).json({ message: 'Department not found' });
+  const course = await db.execute({ sql: 'SELECT id FROM courses WHERE id = ?', args: [courseId] });
+  if (!course.rows.length) return res.status(404).json({ message: 'Course not found' });
+  const existing = await db.execute({
+    sql: 'SELECT * FROM department_courses WHERE departmentId = ? AND courseId = ?',
+    args: [departmentId, courseId],
+  });
+  if (existing.rows.length) return res.status(400).json({ message: 'Course already assigned to this department' });
+  await db.execute({
+    sql: 'INSERT INTO department_courses (departmentId, courseId) VALUES (?, ?)',
+    args: [departmentId, courseId],
+  });
+  res.status(201).json({ departmentId, courseId });
 });
 
 /**
@@ -63,18 +66,22 @@ router.post('/', (req, res) => {
  *                 type: integer
  *     responses:
  *       200:
- *         description: Course removed from department
+ *         description: Assignment removed
  *       404:
  *         description: Assignment not found
  */
-router.delete('/', (req, res) => {
+router.delete('/', async (req, res) => {
   const { departmentId, courseId } = req.body;
-  const index = departmentCourses.findIndex(
-    dc => dc.departmentId === departmentId && dc.courseId === courseId
-  );
-  if (index === -1) return res.status(404).json({ message: 'Assignment not found' });
-  const deleted = departmentCourses.splice(index, 1);
-  res.json(deleted[0]);
+  const existing = await db.execute({
+    sql: 'SELECT * FROM department_courses WHERE departmentId = ? AND courseId = ?',
+    args: [departmentId, courseId],
+  });
+  if (!existing.rows.length) return res.status(404).json({ message: 'Assignment not found' });
+  await db.execute({
+    sql: 'DELETE FROM department_courses WHERE departmentId = ? AND courseId = ?',
+    args: [departmentId, courseId],
+  });
+  res.json({ departmentId, courseId });
 });
 
 module.exports = router;

@@ -1,8 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const courses = require('../data/courses');
-const departmentCourses = require('../data/departmentCourses');
-const departments = require('../data/departments');
+const db = require('../db');
 
 /**
  * @swagger
@@ -30,8 +28,9 @@ const departments = require('../data/departments');
  *       200:
  *         description: List of all courses
  */
-router.get('/', (req, res) => {
-  res.json(courses);
+router.get('/', async (req, res) => {
+  const result = await db.execute('SELECT * FROM courses');
+  res.json(result.rows);
 });
 
 /**
@@ -52,10 +51,10 @@ router.get('/', (req, res) => {
  *       404:
  *         description: Course not found
  */
-router.get('/:id', (req, res) => {
-  const course = courses.find(c => c.id === parseInt(req.params.id));
-  if (!course) return res.status(404).json({ message: 'Course not found' });
-  res.json(course);
+router.get('/:id', async (req, res) => {
+  const result = await db.execute({ sql: 'SELECT * FROM courses WHERE id = ?', args: [req.params.id] });
+  if (!result.rows.length) return res.status(404).json({ message: 'Course not found' });
+  res.json(result.rows[0]);
 });
 
 /**
@@ -80,15 +79,13 @@ router.get('/:id', (req, res) => {
  *       201:
  *         description: Course created
  */
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const { name, credits } = req.body;
-  const newCourse = {
-    id: courses.length ? courses[courses.length - 1].id + 1 : 1,
-    name,
-    credits,
-  };
-  courses.push(newCourse);
-  res.status(201).json(newCourse);
+  const result = await db.execute({
+    sql: 'INSERT INTO courses (name, credits) VALUES (?, ?) RETURNING *',
+    args: [name, credits],
+  });
+  res.status(201).json(result.rows[0]);
 });
 
 /**
@@ -120,11 +117,16 @@ router.post('/', (req, res) => {
  *       404:
  *         description: Course not found
  */
-router.put('/:id', (req, res) => {
-  const index = courses.findIndex(c => c.id === parseInt(req.params.id));
-  if (index === -1) return res.status(404).json({ message: 'Course not found' });
-  courses[index] = { ...courses[index], ...req.body };
-  res.json(courses[index]);
+router.put('/:id', async (req, res) => {
+  const existing = await db.execute({ sql: 'SELECT * FROM courses WHERE id = ?', args: [req.params.id] });
+  if (!existing.rows.length) return res.status(404).json({ message: 'Course not found' });
+  const name = req.body.name ?? existing.rows[0].name;
+  const credits = req.body.credits ?? existing.rows[0].credits;
+  const result = await db.execute({
+    sql: 'UPDATE courses SET name = ?, credits = ? WHERE id = ? RETURNING *',
+    args: [name, credits, req.params.id],
+  });
+  res.json(result.rows[0]);
 });
 
 /**
@@ -145,14 +147,12 @@ router.put('/:id', (req, res) => {
  *       404:
  *         description: Course not found
  */
-router.delete('/:id', (req, res) => {
-  const index = courses.findIndex(c => c.id === parseInt(req.params.id));
-  if (index === -1) return res.status(404).json({ message: 'Course not found' });
-  const deleted = courses.splice(index, 1);
-  // also clean up department assignments
-  const dcIndex = departmentCourses.findIndex(dc => dc.courseId === deleted[0].id);
-  if (dcIndex !== -1) departmentCourses.splice(dcIndex, 1);
-  res.json(deleted[0]);
+router.delete('/:id', async (req, res) => {
+  const existing = await db.execute({ sql: 'SELECT * FROM courses WHERE id = ?', args: [req.params.id] });
+  if (!existing.rows.length) return res.status(404).json({ message: 'Course not found' });
+  await db.execute({ sql: 'DELETE FROM department_courses WHERE courseId = ?', args: [req.params.id] });
+  await db.execute({ sql: 'DELETE FROM courses WHERE id = ?', args: [req.params.id] });
+  res.json(existing.rows[0]);
 });
 
 /**
@@ -173,13 +173,16 @@ router.delete('/:id', (req, res) => {
  *       404:
  *         description: Course not found
  */
-router.get('/:id/departments', (req, res) => {
-  const course = courses.find(c => c.id === parseInt(req.params.id));
-  if (!course) return res.status(404).json({ message: 'Course not found' });
-  const ids = departmentCourses
-    .filter(dc => dc.courseId === course.id)
-    .map(dc => dc.departmentId);
-  res.json(departments.filter(d => ids.includes(d.id)));
+router.get('/:id/departments', async (req, res) => {
+  const course = await db.execute({ sql: 'SELECT id FROM courses WHERE id = ?', args: [req.params.id] });
+  if (!course.rows.length) return res.status(404).json({ message: 'Course not found' });
+  const result = await db.execute({
+    sql: `SELECT d.* FROM departments d
+          JOIN department_courses dc ON dc.departmentId = d.id
+          WHERE dc.courseId = ?`,
+    args: [req.params.id],
+  });
+  res.json(result.rows);
 });
 
 module.exports = router;
